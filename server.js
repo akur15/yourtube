@@ -2,8 +2,25 @@ const express = require('express');
 const axios = require('axios');
 const app = express();
 
-// Gunakan instance Invidious publik yang stabil
-const INVIDIOUS_API = 'https://invidious.privacydev.net/api/v1';
+// Daftar beberapa server Invidious publik alternatif (cadangan otomatis)
+const INVIDIOUS_INSTANCES = [
+  'https://invidious.projectsegfault.net',
+  'https://invidious.privacydev.net',
+  'https://invidious.nerdvpn.de'
+];
+
+// Fungsi untuk mengambil data dari API dengan sistem pindah server otomatis jika gagal
+async function fetchInvidious(endpoint) {
+  for (let base of INVIDIOUS_INSTANCES) {
+    try {
+      const response = await axios.get(`${base}/api/v1${endpoint}`, { timeout: 4000 });
+      return response.data;
+    } catch (err) {
+      console.log(`Gagal dengan ${base}, mencoba instance lain...`);
+    }
+  }
+  throw new Error("Semua instance Invidious tidak merespons.");
+}
 
 // Styling CSS Obsidian Luxe khusus layar QVGA 320x240 (D-pad friendly)
 const baseCSS = `
@@ -23,16 +40,15 @@ const baseCSS = `
 app.get('/', async (req, res) => {
   try {
     const searchQuery = req.query.q;
-    let url = `${INVIDIOUS_API}/trending?region=ID`;
+    let endpoint = '/trending?region=ID';
     let pageTitle = "Trending - NokiaTube";
 
     if (searchQuery) {
-      url = `${INVIDIOUS_API}/search?q=${encodeURIComponent(searchQuery)}&type=video`;
+      endpoint = `/search?q=${encodeURIComponent(searchQuery)}&type=video`;
       pageTitle = `Cari: ${searchQuery}`;
     }
 
-    const response = await axios.get(url);
-    const videos = response.data;
+    const videos = await fetchInvidious(endpoint);
 
     let html = `<!DOCTYPE html>
     <html>
@@ -68,7 +84,7 @@ app.get('/', async (req, res) => {
 
     res.send(html);
   } catch (err) {
-    res.send(`<html><body style="background:#0d1117;color:#f85149;">Gagal memuat data dari API.<br><a href="/">Kembali</a></body></html>`);
+    res.send(`<html><body style="background:#0d1117;color:#f85149;">Gagal memuat data dari API.<br><a href="/">Coba Lagi</a></body></html>`);
   }
 });
 
@@ -78,8 +94,7 @@ app.get('/watch', async (req, res) => {
     const vidId = req.query.id;
     if (!vidId) return res.redirect('/');
 
-    const response = await axios.get(`${INVIDIOUS_API}/videos/${vidId}`);
-    const v = response.data;
+    const v = await fetchInvidious(`/videos/${vidId}`);
 
     const adaptiveFormats = v.formatStreams || [];
     let streamLinksHtml = '';
@@ -120,5 +135,5 @@ app.get('/watch', async (req, res) => {
   }
 });
 
-// Ekspor aplikasi wajib untuk Vercel Serverless
+// Ekspor aplikasi untuk Vercel Serverless
 module.exports = app;
