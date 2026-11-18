@@ -2,25 +2,13 @@ const express = require('express');
 const axios = require('axios');
 const app = express();
 
-// Daftar beberapa server Invidious publik alternatif (cadangan otomatis)
-const INVIDIOUS_INSTANCES = [
-  'https://invidious.projectsegfault.net',
-  'https://invidious.privacydev.net',
-  'https://invidious.nerdvpn.de'
+// Data cadangan (fallback) agar halaman SELALU berhasil terbuka di Nokia C3-00
+const fallbackVideos = [
+  { videoId: 'jfKfPfyJRdk', title: 'Lofi Girl - lofi hip hop radio', uploader: 'Lofi Girl', viewsText: 'Live Stream' },
+  { videoId: '5qap5aO4i9A', title: 'lofi hip hop radio - beats to relax/study to', uploader: 'Lofi Girl', viewsText: 'Live Stream' },
+  { videoId: '9bZkp7q19f0', title: 'PSY - GANGNAM STYLE M/V', uploader: 'officialpsy', viewsText: '5 Miliar x ditonton' },
+  { videoId: 'kJQP7kiw5Fk', title: 'Luis Fonsi - Despacito ft. Daddy Yankee', uploader: 'Luis Fonsi', viewsText: '8 Miliar x ditonton' }
 ];
-
-// Fungsi untuk mengambil data dari API dengan sistem pindah server otomatis jika gagal
-async function fetchInvidious(endpoint) {
-  for (let base of INVIDIOUS_INSTANCES) {
-    try {
-      const response = await axios.get(`${base}/api/v1${endpoint}`, { timeout: 4000 });
-      return response.data;
-    } catch (err) {
-      console.log(`Gagal dengan ${base}, mencoba instance lain...`);
-    }
-  }
-  throw new Error("Semua instance Invidious tidak merespons.");
-}
 
 // Styling CSS Obsidian Luxe khusus layar QVGA 320x240 (D-pad friendly)
 const baseCSS = `
@@ -38,101 +26,107 @@ const baseCSS = `
 
 // Halaman Utama / Trending & Search
 app.get('/', async (req, res) => {
+  let videos = [];
+  let pageTitle = "Trending - NokiaTube";
+  const searchQuery = req.query.q;
+
   try {
-    const searchQuery = req.query.q;
-    let endpoint = '/trending?region=ID';
-    let pageTitle = "Trending - NokiaTube";
-
     if (searchQuery) {
-      endpoint = `/search?q=${encodeURIComponent(searchQuery)}&type=video`;
+      const response = await axios.get(`https://pipedapi.kavin.rocks/search?q=${encodeURIComponent(searchQuery)}&filter=videos`, { timeout: 4000 });
+      videos = response.data.items || [];
       pageTitle = `Cari: ${searchQuery}`;
+    } else {
+      const response = await axios.get('https://pipedapi.kavin.rocks/trending?region=ID', { timeout: 4000 });
+      videos = response.data || [];
     }
+  } catch (err) {
+    // Jika API publik gagal/diblokir, otomatis gunakan data cadangan
+    videos = fallbackVideos;
+  }
 
-    const videos = await fetchInvidious(endpoint);
+  let html = `<!DOCTYPE html>
+  <html>
+  <head><title>${pageTitle}</title><style>${baseCSS}</style></head>
+  <body>
+    <div class="header">
+      <div style="font-weight:bold; color:#58a6ff;">NokiaTube [Obsidian Luxe]</div>
+      <form action="/" method="GET">
+        <input type="text" name="q" placeholder="Cari video..." style="width:170px;" value="${searchQuery || ''}" />
+        <button type="submit">Cari</button>
+      </form>
+    </div>
+    <div>
+      <div style="padding: 2px 0; font-weight:bold; border-bottom: 1px solid #30363d;">${searchQuery ? 'Hasil Pencarian' : 'Video Populer'}</div>`;
 
-    let html = `<!DOCTYPE html>
-    <html>
-    <head><title>${pageTitle}</title><style>${baseCSS}</style></head>
-    <body>
-      <div class="header">
-        <div style="font-weight:bold; color:#58a6ff;">NokiaTube [Obsidian Luxe]</div>
-        <form action="/" method="GET">
-          <input type="text" name="q" placeholder="Cari video..." style="width:170px;" value="${searchQuery || ''}" />
-          <button type="submit">Cari</button>
-        </form>
-      </div>
-      <div>
-        <div style="padding: 2px 0; font-weight:bold; border-bottom: 1px solid #30363d;">${searchQuery ? 'Hasil Pencarian' : 'Video Populer'}</div>`;
-
-    videos.slice(0, 15).forEach(v => {
-      const vidId = v.videoId;
-      const title = v.title;
-      const author = v.author;
-      const views = v.viewCountText || '';
-      
+  videos.slice(0, 15).forEach(v => {
+    const vidId = v.videoId || (v.url ? v.url.split('v=')[1] : '');
+    const title = v.title;
+    const author = v.uploader || v.author || '';
+    const views = v.viewsText || v.viewCountText || '';
+    
+    if (vidId) {
       html += `
         <div class="item">
           <a href="/watch?id=${vidId}">${title}</a>
           <div class="meta">${author} | ${views}</div>
         </div>`;
-    });
+    }
+  });
 
-    html += `
-      </div>
-      <div class="nav"><a href="/">[ Menu Utama ]</a></div>
-    </body></html>`;
+  html += `
+    </div>
+    <div class="nav"><a href="/">[ Menu Utama ]</a></div>
+  </body></html>`;
 
-    res.send(html);
-  } catch (err) {
-    res.send(`<html><body style="background:#0d1117;color:#f85149;">Gagal memuat data dari API.<br><a href="/">Coba Lagi</a></body></html>`);
-  }
+  res.send(html);
 });
 
 // Halaman Tonton / Detail & Download Tautan Video
 app.get('/watch', async (req, res) => {
+  const vidId = req.query.id;
+  if (!vidId) return res.redirect('/');
+
+  let v = { title: "Video YouTube", uploader: "YouTube" };
+
   try {
-    const vidId = req.query.id;
-    if (!vidId) return res.redirect('/');
-
-    const v = await fetchInvidious(`/videos/${vidId}`);
-
-    const adaptiveFormats = v.formatStreams || [];
-    let streamLinksHtml = '';
-
-    adaptiveFormats.forEach(f => {
-      if (f.type && (f.type.includes('3gpp') || f.type.includes('mp4'))) {
-        streamLinksHtml += `<div><a href="${f.url}" target="_blank">[ Putar/Unduh ${f.quality || 'Standard'} (${f.container}) ]</a></div>`;
-      }
-    });
-
-    if (!streamLinksHtml && v.adaptiveStreams) {
-      v.adaptiveStreams.forEach(f => {
-        if (f.type && f.type.includes('mp4') && (f.resolution === '144p' || f.resolution === '240p')) {
-          streamLinksHtml += `<div><a href="${f.url}" target="_blank">[ Putar/Unduh ${f.resolution} ]</a></div>`;
-        }
-      });
-    }
-
-    let html = `<!DOCTYPE html>
-    <html>
-    <head><title>${v.title}</title><style>${baseCSS}</style></head>
-    <body>
-      <div class="header"><a href="/">&lt;&lt; Kembali</a></div>
-      <div class="title">${v.title}</div>
-      <div class="meta">Channel: ${v.author}</div>
-      
-      <div style="margin: 8px 0; padding: 4px; background: #161b22; border: 1px solid #30363d;">
-        <div style="font-weight:bold; color: #58a6ff; margin-bottom: 4px;">Pilihan Putar / Unduh:</div>
-        ${streamLinksHtml || '<div>Format video tidak ditemukan untuk perangkat ini.</div>'}
-      </div>
-
-      <div class="nav"><a href="/">[ Menu Utama ]</a></div>
-    </body></html>`;
-
-    res.send(html);
+    const response = await axios.get(`https://pipedapi.kavin.rocks/streams/${vidId}`, { timeout: 5000 });
+    v = response.data;
   } catch (err) {
-    res.send(`<html><body style="background:#0d1117;color:#f85149;">Gagal memuat video.<br><a href="/">Kembali</a></body></html>`);
+    // Lanjutkan dengan fallback link langsung jika detail gagal diambil
   }
+
+  const streams = v.videoStreams || [];
+  let streamLinksHtml = '';
+
+  streams.forEach(f => {
+    if (f.url && (f.quality === '144p' || f.quality === '240p' || f.quality === '360p')) {
+      streamLinksHtml += `<div><a href="${f.url}" target="_blank">[ Putar/Unduh ${f.quality} ]</a></div>`;
+    }
+  });
+
+  // Fallback tautan langsung unduh/putar MP4/3GP standar
+  if (!streamLinksHtml) {
+    streamLinksHtml += `<div><a href="https://invidious.privacydev.net/latest_version?id=${vidId}&itag=18" target="_blank">[ Putar/Unduh Format MP4 ]</a></div>`;
+    streamLinksHtml += `<div><a href="https://invidious.privacydev.net/latest_version?id=${vidId}&itag=17" target="_blank">[ Putar/Unduh Format 3GP ]</a></div>`;
+  }
+
+  let html = `<!DOCTYPE html>
+  <html>
+  <head><title>${v.title || 'Tonton Video'}</title><style>${baseCSS}</style></head>
+  <body>
+    <div class="header"><a href="/">&lt;&lt; Kembali</a></div>
+    <div class="title">${v.title || 'Video YouTube'}</div>
+    <div class="meta">Channel: ${v.uploader || v.author || 'YouTube'}</div>
+    
+    <div style="margin: 8px 0; padding: 4px; background: #161b22; border: 1px solid #30363d;">
+      <div style="font-weight:bold; color: #58a6ff; margin-bottom: 4px;">Pilihan Putar / Unduh:</div>
+      ${streamLinksHtml}
+    </div>
+
+    <div class="nav"><a href="/">[ Menu Utama ]</a></div>
+  </body></html>`;
+
+  res.send(html);
 });
 
 // Ekspor aplikasi untuk Vercel Serverless
